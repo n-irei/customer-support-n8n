@@ -66,8 +66,7 @@
       "parameters": {
         "method": "POST",
         "url": "https://api.anthropic.com/v1/messages",
-        "authentication": "genericCredentialType",
-        "genericAuthType": "httpHeaderAuth",
+        "authentication": "none",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
@@ -82,9 +81,6 @@
           ]
         },
         "sendBody": true,
-        "bodyParameters": {
-          "parameters": []
-        },
         "specifyBody": "json",
         "jsonBody": "={\n  \"model\": \"claude-haiku-4-5\",\n  \"max_tokens\": 512,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"以下の問い合わせを分析し、JSON形式のみで回答してください。\\n\\n差出人: {{ $json.from }}\\n件名: {{ $json.subject }}\\n本文: {{ $json.body }}\\n\\n以下のJSON形式で回答してください（コードブロック不要）:\\n{\\n  \\\"category\\\": \\\"返金・請求\\\" | \\\"技術サポート\\\" | \\\"契約・解約\\\" | \\\"その他\\\",\\n  \\\"priority\\\": \\\"HIGH\\\" | \\\"MEDIUM\\\" | \\\"LOW\\\",\\n  \\\"team\\\": 担当チーム名（文字列）,\\n  \\\"reason\\\": 分類理由（1文）\\n}\"\n    }\n  ]\n}",
         "options": {}
@@ -178,7 +174,7 @@
           ]
         },
         "options": {
-          "fallbackOutput": "extra"
+          "fallbackOutput": "Extra Output"
         }
       },
       "id": "switch-routing",
