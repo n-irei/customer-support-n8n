@@ -1,0 +1,14 @@
+.env
+*.local
+
+# n8n データ
+n8n_data/
+.n8n/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# 動画（容量大のためGit LFS推奨）
+*.mp4
+*.mov

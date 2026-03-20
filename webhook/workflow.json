@@ -1,0 +1,510 @@
+{
+  "name": "Customer Support Triage & Routing (Webhook)",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "sticky-overview",
+      "name": "📋 Overview",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [-400, -300],
+      "notes": "## Customer Support Triage & Routing\n\n**Flow:**\n1. Webhook で問い合わせ受信\n2. Claude AI が分類・優先度付け・担当者割り当て\n3. Switch でカテゴリ別にルーティング\n4. Claude AI が返信下書き生成\n5. Slack Webhook で担当者に通知\n6. Wait（HIL）で担当者が承認\n7. 承認後に最終レスポンスを返す\n\n**必要な環境変数:**\n- ANTHROPIC_API_KEY\n- SLACK_WEBHOOK_URL"
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "support-triage",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-trigger",
+      "name": "📨 問い合わせ受信",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [-200, 0],
+      "webhookId": "support-triage-webhook"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "field-from",
+              "name": "from",
+              "value": "={{ $json.body.from ?? 'unknown@example.com' }}",
+              "type": "string"
+            },
+            {
+              "id": "field-subject",
+              "name": "subject",
+              "value": "={{ $json.body.subject ?? '件名なし' }}",
+              "type": "string"
+            },
+            {
+              "id": "field-body",
+              "name": "body",
+              "value": "={{ $json.body.body ?? '' }}",
+              "type": "string"
+            },
+            {
+              "id": "field-received-at",
+              "name": "received_at",
+              "value": "={{ $now }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "set-inquiry",
+      "name": "📝 問い合わせデータ整形",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [60, 0]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            },
+            {
+              "name": "x-api-key",
+              "value": "={{ $env.ANTHROPIC_API_KEY }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": []
+        },
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"claude-haiku-4-5\",\n  \"max_tokens\": 512,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"以下の問い合わせを分析し、JSON形式のみで回答してください。\\n\\n差出人: {{ $json.from }}\\n件名: {{ $json.subject }}\\n本文: {{ $json.body }}\\n\\n以下のJSON形式で回答してください（コードブロック不要）:\\n{\\n  \\\"category\\\": \\\"返金・請求\\\" | \\\"技術サポート\\\" | \\\"契約・解約\\\" | \\\"その他\\\",\\n  \\\"priority\\\": \\\"HIGH\\\" | \\\"MEDIUM\\\" | \\\"LOW\\\",\\n  \\\"team\\\": 担当チーム名（文字列）,\\n  \\\"reason\\\": 分類理由（1文）\\n}\"\n    }\n  ]\n}",
+        "options": {}
+      },
+      "id": "claude-classify",
+      "name": "🤖 AI分類・優先度付け",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [320, 0]
+    },
+    {
+      "parameters": {
+        "jsCode": "const response = $input.first().json;\nconst text = response.content[0].text.trim();\n\nlet classification;\ntry {\n  classification = JSON.parse(text);\n} catch (e) {\n  classification = {\n    category: 'その他',\n    priority: 'MEDIUM',\n    team: '一般サポートチーム',\n    reason: 'AI分類に失敗しました'\n  };\n}\n\nreturn [{\n  json: {\n    ...items[0].json,\n    ...classification\n  }\n}];"
+      },
+      "id": "parse-classification",
+      "name": "🔍 分類結果パース",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [580, 0]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "rules": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.category }}",
+                    "rightValue": "返金・請求",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "返金・請求"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.category }}",
+                    "rightValue": "技術サポート",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "技術サポート"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.category }}",
+                    "rightValue": "契約・解約",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "契約・解約"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra"
+        }
+      },
+      "id": "switch-routing",
+      "name": "🔀 カテゴリルーティング",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [840, 0]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            },
+            {
+              "name": "x-api-key",
+              "value": "={{ $env.ANTHROPIC_API_KEY }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"claude-haiku-4-5\",\n  \"max_tokens\": 1024,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"以下の問い合わせへの返信下書きを日本語で作成してください。担当者が確認・修正するための下書きです。丁寧なビジネスメールとして作成してください。\\n\\n差出人: {{ $json.from }}\\n件名: {{ $json.subject }}\\n本文: {{ $json.body }}\\nカテゴリ: {{ $json.category }}\\n優先度: {{ $json.priority }}\\n担当チーム: {{ $json.team }}\\n\\n返信文のみ出力してください。\"\n    }\n  ]\n}",
+        "options": {}
+      },
+      "id": "claude-draft",
+      "name": "✍️ 返信下書き生成",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1100, 0]
+    },
+    {
+      "parameters": {
+        "jsCode": "const prev = $input.first().json;\nconst draftText = prev.content?.[0]?.text ?? '（下書き生成失敗）';\n\n// 元の問い合わせデータを引き継ぎ\nconst inquiry = $('🔀 カテゴリルーティング').first().json;\n\nreturn [{\n  json: {\n    ...inquiry,\n    draft_reply: draftText\n  }\n}];"
+      },
+      "id": "merge-draft",
+      "name": "📋 データマージ",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1360, 0]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SLACK_WEBHOOK_URL }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"text\": \"📬 *新しい問い合わせが届きました*\",\n  \"blocks\": [\n    {\n      \"type\": \"header\",\n      \"text\": {\n        \"type\": \"plain_text\",\n        \"text\": \"📬 新しい問い合わせ\"\n      }\n    },\n    {\n      \"type\": \"section\",\n      \"fields\": [\n        {\n          \"type\": \"mrkdwn\",\n          \"text\": \"*差出人:*\\n{{ $json.from }}\"\n        },\n        {\n          \"type\": \"mrkdwn\",\n          \"text\": \"*件名:*\\n{{ $json.subject }}\"\n        },\n        {\n          \"type\": \"mrkdwn\",\n          \"text\": \"*カテゴリ:*\\n{{ $json.category }}\"\n        },\n        {\n          \"type\": \"mrkdwn\",\n          \"text\": \"*優先度:*\\n{{ $json.priority === 'HIGH' ? '🔴 HIGH' : $json.priority === 'MEDIUM' ? '🟡 MEDIUM' : '🟢 LOW' }}\"\n        },\n        {\n          \"type\": \"mrkdwn\",\n          \"text\": \"*担当チーム:*\\n{{ $json.team }}\"\n        },\n        {\n          \"type\": \"mrkdwn\",\n          \"text\": \"*分類理由:*\\n{{ $json.reason }}\"\n        }\n      ]\n    },\n    {\n      \"type\": \"section\",\n      \"text\": {\n        \"type\": \"mrkdwn\",\n        \"text\": \"*返信下書き:*\\n```{{ $json.draft_reply.substring(0, 500) }}```\"\n      }\n    },\n    {\n      \"type\": \"actions\",\n      \"elements\": [\n        {\n          \"type\": \"button\",\n          \"text\": { \"type\": \"plain_text\", \"text\": \"✅ 承認して送信\" },\n          \"style\": \"primary\",\n          \"value\": \"approve\"\n        },\n        {\n          \"type\": \"button\",\n          \"text\": { \"type\": \"plain_text\", \"text\": \"❌ スキップ\" },\n          \"style\": \"danger\",\n          \"value\": \"skip\"\n        }\n      ]\n    }\n  ]\n}",
+        "options": {}
+      },
+      "id": "slack-notify",
+      "name": "📣 Slack通知",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1620, 0]
+    },
+    {
+      "parameters": {
+        "resume": "webhook",
+        "options": {
+          "webhookSuffix": "approval"
+        }
+      },
+      "id": "wait-approval",
+      "name": "⏸️ 承認待ち (HIL)",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [1880, 0],
+      "webhookId": "approval-webhook"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "check-approval",
+              "leftValue": "={{ $json.body.action }}",
+              "rightValue": "approve",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "check-approved",
+      "name": "✅ 承認チェック",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [2140, 0]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"status\": \"approved\",\n  \"message\": \"返信が承認されました。送信処理を実行します。\",\n  \"category\": \"{{ $('📋 データマージ').first().json.category }}\",\n  \"priority\": \"{{ $('📋 データマージ').first().json.priority }}\",\n  \"team\": \"{{ $('📋 データマージ').first().json.team }}\",\n  \"draft_reply\": \"{{ $('📋 データマージ').first().json.draft_reply }}\"\n}",
+        "options": {}
+      },
+      "id": "respond-approved",
+      "name": "✅ 承認済みレスポンス",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [2400, -100]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"status\": \"skipped\",\n  \"message\": \"返信はスキップされました。\",\n  \"category\": \"{{ $('📋 データマージ').first().json.category }}\",\n  \"priority\": \"{{ $('📋 データマージ').first().json.priority }}\"\n}",
+        "options": {}
+      },
+      "id": "respond-skipped",
+      "name": "❌ スキップレスポンス",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [2400, 100]
+    },
+    {
+      "parameters": {},
+      "id": "sticky-sample",
+      "name": "🧪 サンプルリクエスト",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [-200, 300],
+      "notes": "## テスト用サンプルリクエスト\n\n```bash\ncurl -X POST http://localhost:5678/webhook/support-triage \\\n  -H 'Content-Type: application/json' \\\n  -d '{\n    \"from\": \"tanaka@example.com\",\n    \"subject\": \"先月の請求が二重になっています\",\n    \"body\": \"お世話になっております。田中と申します。先月分の請求が2回引き落とされているようです。確認してご対応いただけますか？\"\n  }'\n```\n\n## 環境変数（.env）\n\n```\nANTHROPIC_API_KEY=sk-ant-...\nSLACK_WEBHOOK_URL=https://hooks.slack.com/services/...\n```"
+    },
+    {
+      "parameters": {},
+      "id": "sticky-hil",
+      "name": "💡 HIL（承認フロー）について",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [1880, 300],
+      "notes": "## HIL（Human-in-the-Loop）\n\nSlack通知の「承認」ボタンは、\n実際にはWaitノードの再開URLに\nPOSTする必要があります。\n\n本番実装では Slack Interactivity を\n使ってボタンのpayloadをこのワークフローに\n送信するよう設定してください。\n\n**デモ用の手動承認:**\n```bash\ncurl -X POST \\\n  http://localhost:5678/webhook/approval \\\n  -H 'Content-Type: application/json' \\\n  -d '{\"action\": \"approve\"}'\n```"
+    }
+  ],
+  "connections": {
+    "📨 問い合わせ受信": {
+      "main": [
+        [
+          {
+            "node": "📝 問い合わせデータ整形",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "📝 問い合わせデータ整形": {
+      "main": [
+        [
+          {
+            "node": "🤖 AI分類・優先度付け",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "🤖 AI分類・優先度付け": {
+      "main": [
+        [
+          {
+            "node": "🔍 分類結果パース",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "🔍 分類結果パース": {
+      "main": [
+        [
+          {
+            "node": "🔀 カテゴリルーティング",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "🔀 カテゴリルーティング": {
+      "main": [
+        [
+          {
+            "node": "✍️ 返信下書き生成",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "✍️ 返信下書き生成",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "✍️ 返信下書き生成",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "✍️ 返信下書き生成",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "✍️ 返信下書き生成": {
+      "main": [
+        [
+          {
+            "node": "📋 データマージ",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "📋 データマージ": {
+      "main": [
+        [
+          {
+            "node": "📣 Slack通知",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "📣 Slack通知": {
+      "main": [
+        [
+          {
+            "node": "⏸️ 承認待ち (HIL)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "⏸️ 承認待ち (HIL)": {
+      "main": [
+        [
+          {
+            "node": "✅ 承認チェック",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "✅ 承認チェック": {
+      "main": [
+        [
+          {
+            "node": "✅ 承認済みレスポンス",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "❌ スキップレスポンス",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": ""
+  },
+  "staticData": null,
+  "meta": {
+    "templateCredsSetupCompleted": false,
+    "instanceId": "customer-support-n8n"
+  },
+  "pinData": {
+    "📨 問い合わせ受信": [
+      {
+        "json": {
+          "body": {
+            "from": "tanaka@example.com",
+            "subject": "先月の請求が二重になっています",
+            "body": "お世話になっております。田中と申します。先月分の請求が2回引き落とされているようです。確認してご対応いただけますか？"
+          },
+          "headers": {
+            "content-type": "application/json"
+          },
+          "params": {}
+        }
+      }
+    ]
+  },
+  "versionId": "1.0.0",
+  "tags": [
+    {
+      "name": "customer-support"
+    },
+    {
+      "name": "triage"
+    },
+    {
+      "name": "pattern4"
+    }
+  ]
+}
